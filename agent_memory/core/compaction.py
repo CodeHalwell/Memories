@@ -151,8 +151,8 @@ async def validate_merge(
         if not isinstance(queries, list):
             queries = list(queries.values()) if isinstance(queries, dict) else []
     except Exception:
-        logger.debug("Synthetic query generation failed, skipping validation")
-        return MergeValidation(passed=True, queries_tested=[])
+        logger.warning("Synthetic query generation failed, failing validation to be safe")
+        return MergeValidation(passed=False, queries_tested=[])
 
     if not queries:
         return MergeValidation(passed=True, queries_tested=[])
