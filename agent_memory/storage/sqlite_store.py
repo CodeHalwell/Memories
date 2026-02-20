@@ -362,15 +362,16 @@ class SQLiteStore:
 
     async def get_all_keywords_with_memories(self, tiers: list[str] | None = None) -> list[dict]:
         """Return all keyword-memory associations for active tiers (A2.5)."""
-        tier_filter = "('hot', 'warm')" if not tiers else "(" + ",".join(f"'{t}'" for t in tiers) + ")"
+        tiers_to_use = tiers or ["hot", "warm"]
+        placeholders = ",".join("?" for _ in tiers_to_use)
         sql = f"""
             SELECT mk.keyword, mk.memory_id, mk.weight
             FROM memory_keywords mk
             JOIN memories m ON mk.memory_id = m.id
-            WHERE m.tier IN {tier_filter}
+            WHERE m.tier IN ({placeholders})
         """
         rows = []
-        async with self.db.execute(sql) as cur:
+        async with self.db.execute(sql, tiers_to_use) as cur:
             async for row in cur:
                 rows.append({"keyword": row["keyword"], "memory_id": row["memory_id"], "weight": row["weight"]})
         return rows
