@@ -1,0 +1,171 @@
+"""Qdrant vector store for semantic similarity search.
+
+Runs in embedded (local) mode — no server required. Manages two collections:
+  - memory_text: sentence-transformer embeddings of memory content
+  - memory_visual: CLIP embeddings of scene descriptions
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+from pathlib import Path
+
+from qdrant_client import QdrantClient
+from qdrant_client.models import (
+    Distance,
+    FieldCondition,
+    Filter,
+    MatchValue,
+    PointStruct,
+    VectorParams,
+)
+
+from agent_memory.config import VECTOR_DIR
+
+logger = logging.getLogger(__name__)
+
+TEXT_COLLECTION = "memory_text"
+VISUAL_COLLECTION = "memory_visual"
+
+
+class VectorStore:
+    """Qdrant-backed vector store for memory embeddings."""
+
+    def __init__(self, vector_dir: Path | None = None) -> None:
+        self.vector_dir = vector_dir or VECTOR_DIR
+        self._client: QdrantClient | None = None
+
+    def initialize(self, text_dim: int = 384, visual_dim: int = 512) -> None:
+        """Initialize Qdrant in embedded mode and ensure collections exist."""
+        self.vector_dir.mkdir(parents=True, exist_ok=True)
+        self._client = QdrantClient(path=str(self.vector_dir))
+        self._ensure_collection(TEXT_COLLECTION, text_dim)
+        self._ensure_collection(VISUAL_COLLECTION, visual_dim)
+
+    def close(self) -> None:
+        if self._client:
+            self._client.close()
+            self._client = None
+
+    @property
+    def client(self) -> QdrantClient:
+        assert self._client is not None, "VectorStore not initialized — call initialize() first"
+        return self._client
+
+    def _ensure_collection(self, name: str, dim: int) -> None:
+        collections = [c.name for c in self.client.get_collections().collections]
+        if name not in collections:
+            self.client.create_collection(
+                collection_name=name,
+                vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+            )
+
+    # ── Text embeddings ──
+
+    def upsert_text_vector(
+        self, memory_id: str, vector: list[float],
+        tier: str = "hot", valence: float = 0.0, arousal: float = 0.0,
+        session_id: str = "", created_at: str = "",
+    ) -> str:
+        """Insert or update a text embedding. Returns the point ID."""
+        point_id = str(uuid.uuid4())
+        self.client.upsert(
+            collection_name=TEXT_COLLECTION,
+            points=[
+                PointStruct(
+                    id=point_id,
+                    vector=vector,
+                    payload={
+                        "memory_id": memory_id,
+                        "tier": tier,
+                        "valence": valence,
+                        "arousal": arousal,
+                        "session_id": session_id,
+                        "created_at": created_at,
+                    },
+                )
+            ],
+        )
+        return point_id
+
+    def search_text(
+        self, query_vector: list[float], limit: int = 5,
+        tier_filter: str | None = None,
+    ) -> list[dict]:
+        """Search for nearest text embeddings.
+
+        Returns list of dicts: {memory_id, score, tier, valence, arousal}.
+        """
+        search_filter = None
+        if tier_filter:
+            search_filter = Filter(
+                must=[FieldCondition(key="tier", match=MatchValue(value=tier_filter))]
+            )
+
+        results = self.client.query_points(
+            collection_name=TEXT_COLLECTION,
+            query=query_vector,
+            limit=limit,
+            query_filter=search_filter,
+        )
+        return [
+            {
+                "memory_id": r.payload["memory_id"],
+                "score": r.score,
+                "tier": r.payload.get("tier", "hot"),
+                "valence": r.payload.get("valence", 0.0),
+                "arousal": r.payload.get("arousal", 0.0),
+            }
+            for r in results.points
+        ]
+
+    # ── Visual embeddings ──
+
+    def upsert_visual_vector(
+        self, memory_id: str, vector: list[float],
+        session_id: str = "", created_at: str = "",
+    ) -> str:
+        """Insert or update a visual (CLIP) embedding. Returns the point ID."""
+        point_id = str(uuid.uuid4())
+        self.client.upsert(
+            collection_name=VISUAL_COLLECTION,
+            points=[
+                PointStruct(
+                    id=point_id,
+                    vector=vector,
+                    payload={
+                        "memory_id": memory_id,
+                        "session_id": session_id,
+                        "created_at": created_at,
+                    },
+                )
+            ],
+        )
+        return point_id
+
+    def search_visual(
+        self, query_vector: list[float], limit: int = 5,
+    ) -> list[dict]:
+        """Search for nearest visual embeddings.
+
+        Returns list of dicts: {memory_id, score}.
+        """
+        results = self.client.query_points(
+            collection_name=VISUAL_COLLECTION,
+            query=query_vector,
+            limit=limit,
+        )
+        return [
+            {"memory_id": r.payload["memory_id"], "score": r.score}
+            for r in results.points
+        ]
+
+    def delete_point(self, collection: str, memory_id: str) -> None:
+        """Delete all points for a given memory_id from a collection."""
+        self.client.delete(
+            collection_name=collection,
+            points_selector=Filter(
+                must=[FieldCondition(key="memory_id", match=MatchValue(value=memory_id))]
+            ),
+        )
