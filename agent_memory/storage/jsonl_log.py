@@ -23,7 +23,9 @@ class JSONLLogger:
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
     def _session_path(self, session_id: str) -> Path:
-        return self.log_dir / f"{session_id}.jsonl"
+        # Sanitize session_id to prevent path traversal
+        safe_id = os.path.basename(session_id)
+        return self.log_dir / f"{safe_id}.jsonl"
 
     def append(self, entry: RawLogEntry) -> tuple[str, int]:
         """Append an entry and return (file_path, byte_offset)."""
