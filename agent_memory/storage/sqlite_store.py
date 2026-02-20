@@ -360,6 +360,19 @@ class SQLiteStore:
         )
         await self.db.commit()
 
+    async def batch_update_keyword_weights(
+        self, updates: list[tuple[float, str, str]],
+    ) -> None:
+        """Update multiple keyword weights in a single transaction (A2.5).
+
+        Each tuple is (new_weight, memory_id, keyword).
+        """
+        await self.db.executemany(
+            "UPDATE memory_keywords SET weight = MIN(?, 1.0) WHERE memory_id = ? AND keyword = ?",
+            updates,
+        )
+        await self.db.commit()
+
     async def get_all_keywords_with_memories(self, tiers: list[str] | None = None) -> list[dict]:
         """Return all keyword-memory associations for active tiers (A2.5)."""
         tiers_to_use = tiers or ["hot", "warm"]

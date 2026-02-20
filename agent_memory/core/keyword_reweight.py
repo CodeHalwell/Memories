@@ -21,11 +21,15 @@ async def reweight_keywords_from_graph(
     sqlite: SQLiteStore,
     graph: GraphStore,
     max_hops: int = 2,
+    max_memories_per_keyword: int = 50,
 ) -> int:
     """Adjust keyword weights based on graph connectivity.
 
     Keywords shared across well-connected memories get boosted.
     Returns the number of keyword weights updated.
+
+    ``max_memories_per_keyword`` caps the number of memories evaluated per
+    keyword to avoid O(n²) graph queries for very common keywords.
     """
     # Get all keywords with their memory associations
     rows = await sqlite.get_all_keywords_with_memories()
@@ -37,12 +41,16 @@ async def reweight_keywords_from_graph(
     for row in rows:
         keyword_index[row["keyword"]].append(row)
 
-    updated = 0
+    # Collect all weight updates, then commit in a single batch
+    pending_updates: list[tuple[float, str, str]] = []
+
     for keyword, entries in keyword_index.items():
         if len(entries) < 2:
             continue
 
-        memory_ids = [e["memory_id"] for e in entries]
+        # Cap memories per keyword to avoid O(n²) graph queries
+        capped_entries = entries[:max_memories_per_keyword]
+        memory_ids = [e["memory_id"] for e in capped_entries]
 
         # Check graph connectivity between memories sharing this keyword
         connected_pairs = 0
@@ -65,13 +73,14 @@ async def reweight_keywords_from_graph(
 
         boost = 1.0 + 0.5 * connectivity_ratio
 
-        for entry in entries:
+        for entry in capped_entries:
             new_weight = min(entry["weight"] * boost, 1.0)
             if new_weight != entry["weight"]:
-                await sqlite.update_keyword_weight(
-                    entry["memory_id"], keyword, new_weight,
-                )
-                updated += 1
+                pending_updates.append((new_weight, entry["memory_id"], keyword))
 
+    if pending_updates:
+        await sqlite.batch_update_keyword_weights(pending_updates)
+
+    updated = len(pending_updates)
     logger.info("Keyword reweighting: updated %d weights", updated)
     return updated

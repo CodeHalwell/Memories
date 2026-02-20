@@ -81,6 +81,9 @@ async def exploratory_walk(
         return discovered
 
     # Strategy 1: Random anchor pairs
+    if not text_embedder:
+        return discovered
+
     for _ in range(n_walks):
         if len(discovered) >= max_new_edges:
             break
@@ -96,9 +99,6 @@ async def exploratory_walk(
             continue
 
         # Check semantic similarity via vector store
-        if not text_embedder:
-            continue
-
         sim = vector.similarity(a["vector_id"], b["vector_id"])
         if sim is None or sim < similarity_threshold:
             continue
