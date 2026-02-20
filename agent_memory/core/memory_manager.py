@@ -232,8 +232,9 @@ class MemoryManager:
             # Generate scene description via LLM
             from agent_memory.llm.client import llm_complete
             scene = await llm_complete(
-                f"Generate an abstract scene description for this memory:\n\n{memory.content}",
+                f"Generate an abstract scene description for this memory:\n\n<memory_content>\n{memory.content}\n</memory_content>",
                 system=_SCENE_SYSTEM,
+            )
             )
             memory.scene_description = scene.strip()
 
