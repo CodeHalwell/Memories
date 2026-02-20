@@ -2,6 +2,7 @@
 
 import pytest
 import pytest_asyncio
+from datetime import datetime, timedelta, timezone
 
 from agent_memory.models import Memory, SaveDecision
 from agent_memory.policy.outcome_assessor import (
@@ -25,6 +26,11 @@ def _mem(id: str, **kwargs) -> Memory:
     return Memory(id=id, **defaults)
 
 
+def _two_days_ago() -> str:
+    """Return an ISO timestamp 2 days ago, which is older than 1 day and passes a lookback_days=1 filter."""
+    return (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+
+
 @pytest.mark.asyncio
 async def test_assess_save_outcomes_marks_unused(store):
     """Memories never accessed should be marked as not useful."""
@@ -34,13 +40,12 @@ async def test_assess_save_outcomes_marks_unused(store):
     dec = SaveDecision(
         id="dec-1", raw_log_id="raw-m1", session_id="s1", turn=1,
         decision="save", confidence=0.8,
-        decided_at="2025-01-01T00:00:00Z",  # old enough
+        decided_at=_two_days_ago(),
     )
     await store.log_save_decision(dec)
 
     assessed = await assess_save_outcomes(store, lookback_days=1)
-    # Should find and assess the decision
-    assert assessed >= 0  # may be 0 if datetime filtering doesn't match in test env
+    assert assessed >= 1
 
 
 @pytest.mark.asyncio
@@ -50,12 +55,12 @@ async def test_assess_save_outcomes_marks_used(store):
     dec = SaveDecision(
         id="dec-2", raw_log_id="raw-m2", session_id="s1", turn=1,
         decision="save", confidence=0.9,
-        decided_at="2025-01-01T00:00:00Z",
+        decided_at=_two_days_ago(),
     )
     await store.log_save_decision(dec)
 
     assessed = await assess_save_outcomes(store, lookback_days=1)
-    assert assessed >= 0
+    assert assessed >= 1
 
 
 @pytest.mark.asyncio
@@ -87,7 +92,7 @@ async def test_retrieval_outcome_assessment(store):
     await store.log_retrieval_decision(
         decision_id="rd-1", session_id="s1", turn=5,
         query="python async",
-        decided_at="2025-01-01T10:00:00Z",  # old enough
+        decided_at=_two_days_ago(),
         layers_queried=["keyword"],
         graph_depth=2, mood_weight=0.2, top_k=5,
         memory_ids=["m1"], return_count=1,
