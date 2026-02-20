@@ -161,6 +161,29 @@ class VectorStore:
             for r in results.points
         ]
 
+    def similarity(self, point_id_a: str, point_id_b: str) -> float | None:
+        """Compute cosine similarity between two points in the text collection.
+
+        Returns the similarity score or None if either point is not found.
+        Used by dream explorer (A3) for cross-session similarity checks.
+        """
+        try:
+            points = self.client.retrieve(
+                collection_name=TEXT_COLLECTION,
+                ids=[point_id_a, point_id_b],
+                with_vectors=True,
+            )
+            if len(points) < 2:
+                return None
+            import numpy as np
+            a = np.array(points[0].vector)
+            b = np.array(points[1].vector)
+            dot = np.dot(a, b)
+            norm = np.linalg.norm(a) * np.linalg.norm(b)
+            return float(dot / norm) if norm > 0 else 0.0
+        except Exception:
+            return None
+
     def delete_point(self, collection: str, memory_id: str) -> None:
         """Delete all points for a given memory_id from a collection."""
         self.client.delete(

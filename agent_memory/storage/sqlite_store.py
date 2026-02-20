@@ -74,25 +74,75 @@ CREATE TABLE IF NOT EXISTS compaction_runs (
     memories_reviewed   INTEGER,
     memories_merged     INTEGER,
     memories_pruned     INTEGER,
-    notes               TEXT
+    notes               TEXT,
+    keywords_updated    INTEGER DEFAULT 0,
+    edges_discovered    INTEGER DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS compaction_merges (
     compaction_id         TEXT NOT NULL,
     source_memory_ids     TEXT NOT NULL,
     resulting_memory_id   TEXT NOT NULL,
+    validation_passed     INTEGER,
+    avg_source_score      REAL,
+    avg_merged_score      REAL,
+    degradation           REAL,
     FOREIGN KEY (compaction_id) REFERENCES compaction_runs(id)
 );
 
 CREATE TABLE IF NOT EXISTS save_decisions (
-    id          TEXT PRIMARY KEY,
-    raw_log_id  TEXT NOT NULL,
-    session_id  TEXT NOT NULL,
-    turn        INTEGER NOT NULL,
-    decided_at  TEXT NOT NULL,
-    decision    TEXT NOT NULL,
-    reason      TEXT,
-    confidence  REAL
+    id                  TEXT PRIMARY KEY,
+    raw_log_id          TEXT NOT NULL,
+    session_id          TEXT NOT NULL,
+    turn                INTEGER NOT NULL,
+    decided_at          TEXT NOT NULL,
+    decision            TEXT NOT NULL,
+    reason              TEXT,
+    confidence          REAL,
+    gap_triggered       INTEGER DEFAULT 0,
+    threshold_used      REAL,
+    outcome_useful      INTEGER,
+    outcome_assessed_at TEXT
+);
+
+-- A4: Retrieval decision logging for policy training
+CREATE TABLE IF NOT EXISTS retrieval_decisions (
+    id                  TEXT PRIMARY KEY,
+    session_id          TEXT NOT NULL,
+    turn                INTEGER,
+    query               TEXT NOT NULL,
+    decided_at          TEXT NOT NULL,
+    layers_queried      TEXT NOT NULL,
+    graph_depth         INTEGER,
+    mood_weight         REAL,
+    top_k               INTEGER,
+    memories_returned   TEXT NOT NULL,
+    return_count        INTEGER NOT NULL,
+    outcome_helpful     INTEGER,
+    outcome_assessed_at TEXT
+);
+
+-- A3: Dream exploration logging
+CREATE TABLE IF NOT EXISTS dream_exploration_runs (
+    id                TEXT PRIMARY KEY,
+    ran_at            TEXT NOT NULL,
+    n_walks           INTEGER,
+    edges_discovered  INTEGER,
+    edges_committed   INTEGER,
+    strategies_used   TEXT,
+    notes             TEXT
+);
+
+CREATE TABLE IF NOT EXISTS dream_discovered_edges (
+    id                  TEXT PRIMARY KEY,
+    exploration_run_id  TEXT NOT NULL,
+    source_memory_id    TEXT NOT NULL,
+    target_memory_id    TEXT NOT NULL,
+    similarity          REAL,
+    relationship_type   TEXT,
+    discovery_method    TEXT,
+    committed           INTEGER DEFAULT 0,
+    FOREIGN KEY (exploration_run_id) REFERENCES dream_exploration_runs(id)
 );
 """
 
@@ -302,6 +352,29 @@ class SQLiteStore:
 
         return memories
 
+    async def update_keyword_weight(self, memory_id: str, keyword: str, weight: float) -> None:
+        """Update a single keyword weight (used by keyword reweighting — A2.5)."""
+        await self.db.execute(
+            "UPDATE memory_keywords SET weight = MIN(?, 1.0) WHERE memory_id = ? AND keyword = ?",
+            (weight, memory_id, keyword),
+        )
+        await self.db.commit()
+
+    async def get_all_keywords_with_memories(self, tiers: list[str] | None = None) -> list[dict]:
+        """Return all keyword-memory associations for active tiers (A2.5)."""
+        tier_filter = "('hot', 'warm')" if not tiers else "(" + ",".join(f"'{t}'" for t in tiers) + ")"
+        sql = f"""
+            SELECT mk.keyword, mk.memory_id, mk.weight
+            FROM memory_keywords mk
+            JOIN memories m ON mk.memory_id = m.id
+            WHERE m.tier IN {tier_filter}
+        """
+        rows = []
+        async with self.db.execute(sql) as cur:
+            async for row in cur:
+                rows.append({"keyword": row["keyword"], "memory_id": row["memory_id"], "weight": row["weight"]})
+        return rows
+
     # ── Access log ──
 
     async def log_access(
@@ -315,13 +388,153 @@ class SQLiteStore:
         )
         await self.db.commit()
 
+    async def get_recent_access_queries(
+        self, session_id: str, limit: int = 20,
+    ) -> list[str]:
+        """Return recent retrieval queries for a session (A2.1 gap detection)."""
+        async with self.db.execute(
+            "SELECT query FROM memory_access_log "
+            "WHERE session_id = ? AND query IS NOT NULL "
+            "ORDER BY accessed_at DESC LIMIT ?",
+            (session_id, limit),
+        ) as cur:
+            return [row["query"] async for row in cur]
+
+    async def get_failed_retrieval_keywords(self, session_id: str, lookback: int = 20) -> list[str]:
+        """Identify keywords from queries that yielded no or only cold-tier results (A2.1).
+
+        Returns keywords that represent retrieval gaps.
+        """
+        # Get recent queries
+        queries = await self.get_recent_access_queries(session_id, limit=lookback)
+        if not queries:
+            return []
+
+        # Check which queries only returned cold-tier or no results
+        gap_keywords: list[str] = []
+        for query in queries:
+            async with self.db.execute(
+                """SELECT m.tier FROM memory_access_log mal
+                   JOIN memories m ON mal.memory_id = m.id
+                   WHERE mal.query = ? AND mal.session_id = ?""",
+                (query, session_id),
+            ) as cur:
+                tiers = [row["tier"] async for row in cur]
+
+            # If no results or only cold-tier, this is a gap
+            if not tiers or all(t == "cold" for t in tiers):
+                words = [w.lower().strip() for w in query.split() if len(w) > 2]
+                gap_keywords.extend(words)
+
+        return list(set(gap_keywords))
+
     # ── Save decisions ──
 
     async def log_save_decision(self, dec: SaveDecision) -> None:
         await self.db.execute(
-            "INSERT INTO save_decisions (id, raw_log_id, session_id, turn, decided_at, decision, reason, confidence) "
+            "INSERT INTO save_decisions "
+            "(id, raw_log_id, session_id, turn, decided_at, decision, reason, confidence, gap_triggered, threshold_used) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (dec.id, dec.raw_log_id, dec.session_id, dec.turn, dec.decided_at,
+             dec.decision, dec.reason, dec.confidence, int(dec.gap_triggered), dec.threshold_used),
+        )
+        await self.db.commit()
+
+    async def update_save_outcome(self, decision_id: str, useful: bool, assessed_at: str) -> None:
+        """Mark whether a saved memory turned out to be useful (A4)."""
+        await self.db.execute(
+            "UPDATE save_decisions SET outcome_useful = ?, outcome_assessed_at = ? WHERE id = ?",
+            (int(useful), assessed_at, decision_id),
+        )
+        await self.db.commit()
+
+    async def get_unassessed_save_decisions(self, lookback_days: int = 30) -> list[dict]:
+        """Get save decisions that haven't been assessed yet (A4)."""
+        async with self.db.execute(
+            """SELECT sd.id, sd.raw_log_id, m.id as memory_id, m.access_count
+               FROM save_decisions sd
+               LEFT JOIN memories m ON m.raw_log_id = sd.raw_log_id
+               WHERE sd.decision IN ('save', 'fast_path')
+                 AND sd.id NOT IN (
+                     SELECT id FROM save_decisions WHERE outcome_useful IS NOT NULL
+                 )
+                 AND sd.decided_at < datetime('now', ?)""",
+            (f"-{lookback_days} days",),
+        ) as cur:
+            return [dict(row) async for row in cur]
+
+    # ── Retrieval decisions (A4) ──
+
+    async def log_retrieval_decision(
+        self, decision_id: str, session_id: str, turn: int | None,
+        query: str, decided_at: str, layers_queried: list[str],
+        graph_depth: int, mood_weight: float, top_k: int,
+        memory_ids: list[str], return_count: int,
+    ) -> None:
+        await self.db.execute(
+            "INSERT INTO retrieval_decisions "
+            "(id, session_id, turn, query, decided_at, layers_queried, graph_depth, "
+            "mood_weight, top_k, memories_returned, return_count) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (decision_id, session_id or "", turn, query, decided_at,
+             json.dumps(layers_queried), graph_depth, mood_weight, top_k,
+             json.dumps(memory_ids), return_count),
+        )
+        await self.db.commit()
+
+    async def get_unassessed_retrieval_decisions(self) -> list[dict]:
+        """Get retrieval decisions not yet assessed (A4)."""
+        async with self.db.execute(
+            """SELECT id, session_id, turn, query
+               FROM retrieval_decisions
+               WHERE outcome_helpful IS NULL
+                 AND decided_at < datetime('now', '-1 hour')"""
+        ) as cur:
+            return [dict(row) async for row in cur]
+
+    async def update_retrieval_outcome(self, decision_id: str, helpful: bool, assessed_at: str) -> None:
+        await self.db.execute(
+            "UPDATE retrieval_decisions SET outcome_helpful = ?, outcome_assessed_at = ? WHERE id = ?",
+            (int(helpful), assessed_at, decision_id),
+        )
+        await self.db.commit()
+
+    async def get_retrieval_followups(self, session_id: str, turn: int, window: int = 3) -> list[str]:
+        """Get follow-up queries within a turn window (A4 outcome assessment)."""
+        async with self.db.execute(
+            "SELECT query FROM retrieval_decisions WHERE session_id = ? AND turn > ? AND turn <= ?",
+            (session_id, turn, turn + window),
+        ) as cur:
+            return [row["query"] async for row in cur]
+
+    # ── Dream exploration logging (A3) ──
+
+    async def log_dream_run(
+        self, run_id: str, ran_at: str, n_walks: int,
+        edges_discovered: int, edges_committed: int,
+        strategies: list[str], notes: str | None = None,
+    ) -> None:
+        await self.db.execute(
+            "INSERT INTO dream_exploration_runs "
+            "(id, ran_at, n_walks, edges_discovered, edges_committed, strategies_used, notes) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (run_id, ran_at, n_walks, edges_discovered, edges_committed,
+             json.dumps(strategies), notes),
+        )
+        await self.db.commit()
+
+    async def log_dream_edge(
+        self, edge_id: str, run_id: str, source_id: str, target_id: str,
+        similarity: float, relationship_type: str, discovery_method: str,
+        committed: bool = False,
+    ) -> None:
+        await self.db.execute(
+            "INSERT INTO dream_discovered_edges "
+            "(id, exploration_run_id, source_memory_id, target_memory_id, "
+            "similarity, relationship_type, discovery_method, committed) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (dec.id, dec.raw_log_id, dec.session_id, dec.turn, dec.decided_at, dec.decision, dec.reason, dec.confidence),
+            (edge_id, run_id, source_id, target_id, similarity,
+             relationship_type, discovery_method, int(committed)),
         )
         await self.db.commit()
 
@@ -329,18 +542,31 @@ class SQLiteStore:
 
     async def log_compaction_run(self, result: CompactionResult) -> None:
         await self.db.execute(
-            "INSERT INTO compaction_runs (id, ran_at, trigger, memories_reviewed, memories_merged, memories_pruned, notes) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (result.id, result.ran_at, result.trigger, result.memories_reviewed, result.memories_merged, result.memories_pruned, result.notes),
+            "INSERT INTO compaction_runs "
+            "(id, ran_at, trigger, memories_reviewed, memories_merged, memories_pruned, "
+            "notes, keywords_updated, edges_discovered) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (result.id, result.ran_at, result.trigger, result.memories_reviewed,
+             result.memories_merged, result.memories_pruned, result.notes,
+             result.keywords_updated, result.edges_discovered),
         )
         await self.db.commit()
 
     async def log_compaction_merge(
         self, compaction_id: str, source_ids: list[str], resulting_id: str,
+        validation_passed: bool | None = None,
+        avg_source_score: float | None = None,
+        avg_merged_score: float | None = None,
+        degradation: float | None = None,
     ) -> None:
         await self.db.execute(
-            "INSERT INTO compaction_merges (compaction_id, source_memory_ids, resulting_memory_id) VALUES (?, ?, ?)",
-            (compaction_id, json.dumps(source_ids), resulting_id),
+            "INSERT INTO compaction_merges "
+            "(compaction_id, source_memory_ids, resulting_memory_id, "
+            "validation_passed, avg_source_score, avg_merged_score, degradation) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (compaction_id, json.dumps(source_ids), resulting_id,
+             int(validation_passed) if validation_passed is not None else None,
+             avg_source_score, avg_merged_score, degradation),
         )
         await self.db.commit()
 
@@ -382,11 +608,54 @@ class SQLiteStore:
 
         return candidates
 
+    # ── Policy data export (A4.4) ──
+
+    async def export_save_policy_data(self) -> list[dict]:
+        """Export assessed save decisions for policy training."""
+        rows = []
+        async with self.db.execute(
+            """SELECT sd.confidence, sd.decision, sd.gap_triggered,
+                      m.valence, m.arousal, m.surprise, m.salience,
+                      sd.outcome_useful
+               FROM save_decisions sd
+               LEFT JOIN memories m ON m.raw_log_id = sd.raw_log_id
+               WHERE sd.outcome_useful IS NOT NULL"""
+        ) as cur:
+            async for row in cur:
+                rows.append(dict(row))
+        return rows
+
+    async def export_retrieval_policy_data(self) -> list[dict]:
+        """Export assessed retrieval decisions for policy training."""
+        rows = []
+        async with self.db.execute(
+            """SELECT layers_queried, graph_depth, mood_weight, top_k,
+                      return_count, outcome_helpful
+               FROM retrieval_decisions
+               WHERE outcome_helpful IS NOT NULL"""
+        ) as cur:
+            async for row in cur:
+                rows.append(dict(row))
+        return rows
+
+    async def get_memories_with_vectors(self, tiers: list[str] | None = None) -> list[dict]:
+        """Get memories that have vector embeddings (for dream explorer)."""
+        tier_clause = ""
+        params: tuple = ()
+        if tiers:
+            placeholders = ",".join("?" for _ in tiers)
+            tier_clause = f"AND tier IN ({placeholders})"
+            params = tuple(tiers)
+        sql = f"SELECT id, session_id, vector_id FROM memories WHERE vector_id IS NOT NULL {tier_clause}"
+        rows = []
+        async with self.db.execute(sql, params) as cur:
+            async for row in cur:
+                rows.append(dict(row))
+        return rows
+
 
 def _row_to_memory(row: dict) -> Memory:
     """Convert a SQLite row dict to a Memory dataclass."""
-    # Filter out extra columns like match_score that aren't Memory fields
-    known = {f.name for f in Memory.__dataclass_fields__.values()} if hasattr(Memory, '__dataclass_fields__') else set()
     return Memory(
         id=row["id"],
         created_at=row["created_at"],

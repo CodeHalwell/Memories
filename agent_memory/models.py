@@ -78,6 +78,9 @@ class SaveDecision:
     decision: str = "skip"  # save | skip | fast_path
     reason: str | None = None
     confidence: float = 0.0
+    # A2.1 — retrieval gap awareness
+    gap_triggered: bool = False
+    threshold_used: float | None = None
 
 
 @dataclass
@@ -89,3 +92,26 @@ class CompactionResult:
     memories_merged: int = 0
     memories_pruned: int = 0
     notes: str | None = None
+    # A2.5 / A3 — addendum tracking
+    keywords_updated: int = 0
+    edges_discovered: int = 0
+
+
+@dataclass
+class MergeValidation:
+    """Result of generative replay validation for a compaction merge (A2.4)."""
+    passed: bool = True
+    avg_source_score: float = 0.0
+    avg_merged_score: float = 0.0
+    degradation: float = 0.0
+    queries_tested: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DiscoveredEdge:
+    """An edge discovered during exploratory graph walks (A3)."""
+    source_id: str = ""
+    target_id: str = ""
+    similarity: float = 0.0
+    relationship_type: str = ""
+    discovery_method: str = ""  # random_walk | cluster_bridge | temporal_proximity
