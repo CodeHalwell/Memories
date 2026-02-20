@@ -48,8 +48,12 @@ async def reweight_keywords_from_graph(
         if len(entries) < 2:
             continue
 
-        # Cap memories per keyword to avoid O(n²) graph queries
-        capped_entries = entries[:max_memories_per_keyword]
+        # Cap memories per keyword to avoid O(n²) graph queries.
+        # Sort to ensure deterministic and meaningful selection:
+        #   - higher-weight memories first
+        #   - tie-broken by memory_id for stability
+        sorted_entries = sorted(entries, key=lambda e: (-e["weight"], e["memory_id"]))
+        capped_entries = sorted_entries[:max_memories_per_keyword]
         memory_ids = [e["memory_id"] for e in capped_entries]
 
         # Check graph connectivity between memories sharing this keyword
