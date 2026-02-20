@@ -29,6 +29,8 @@ def compute_decay(last_accessed: datetime, access_count: int) -> float:
     if last_accessed.tzinfo is None:
         last_accessed = last_accessed.replace(tzinfo=timezone.utc)
     days_since = max((now - last_accessed).total_seconds() / 86400, 0.0)
-    recency = math.exp(-0.1 * days_since)
+    halflife = MEMORY_CONFIG["decay_halflife_days"]
+    lambda_ = math.log(2) / halflife if halflife > 0 else 0.1
+    recency = math.exp(-lambda_ * days_since)
     frequency = math.log1p(access_count) / 10.0
-    return round(0.6 * recency + 0.4 * frequency, 4)
+    return round(MEMORY_CONFIG["decay_recency_weight"] * recency + MEMORY_CONFIG["decay_frequency_weight"] * frequency, 4)
