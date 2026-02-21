@@ -158,6 +158,8 @@ class RetrievalEngine:
             mem.last_accessed = now
             mem.decay_score = compute_decay(
                 datetime.fromisoformat(now), mem.access_count,
+                arousal=mem.arousal, surprise=mem.surprise,
+                is_semantic=mem.is_semantic,
             )
 
             await self.sqlite.log_access(

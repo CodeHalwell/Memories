@@ -237,6 +237,20 @@ class GraphStore:
                     except Exception:
                         pass
 
+    def path_exists(self, from_id: str, to_id: str, max_hops: int = 2) -> bool:
+        """Check if a path exists between two memory nodes via RELATES_TO edges."""
+        try:
+            query = (
+                "MATCH (a:Memory {id: $from_id})-[r:RELATES_TO*1.." + str(max_hops) + "]->(b:Memory {id: $to_id}) "
+                "RETURN count(r) AS cnt LIMIT 1"
+            )
+            result = self.conn.execute(query, {"from_id": from_id, "to_id": to_id})
+            if result.has_next():
+                return result.get_next()[0] > 0
+        except Exception:
+            pass
+        return False
+
     def update_memory_tier(self, memory_id: str, tier: str) -> None:
         self.conn.execute(
             "MATCH (m:Memory {id: $id}) SET m.tier = $tier",

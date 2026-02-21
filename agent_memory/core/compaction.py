@@ -6,18 +6,23 @@ detail into semantic generalisations, implementing intentional forgetting.
 Candidate memories are scored, grouped by keyword overlap, and merged when
 appropriate. Lineage is tracked via EVOLVED_FROM edges so any compacted
 memory can be traced back to its originals.
+
+A2.3: Generation gap guard — only merge memories within 1 generation of each other.
+A2.4: Merge validation via generative replay — synthetic queries test that
+      merged memory still surfaces for the same queries as the originals.
 """
 
 from __future__ import annotations
 
 import logging
 import uuid
-from collections import defaultdict
 from datetime import datetime, timezone
+
+import numpy as np
 
 from agent_memory.config import MEMORY_CONFIG
 from agent_memory.llm.client import llm_complete_json
-from agent_memory.models import CompactionResult, Memory
+from agent_memory.models import CompactionResult, Memory, MergeValidation
 from agent_memory.storage.graph_store import GraphStore
 from agent_memory.storage.sqlite_store import SQLiteStore
 from agent_memory.storage.vector_store import VectorStore
@@ -43,6 +48,14 @@ Guidelines:
 - Keyword list should be the union of important keywords from all source memories
 - Emotional scores should reflect the blended tone of the source memories
 - Salience should be the maximum salience of any source memory"""
+
+_SYNTHETIC_QUERY_SYSTEM = """Generate search queries that would retrieve the given memory content.
+
+Respond with ONLY a JSON array of query strings:
+["query 1", "query 2", ...]
+
+Generate queries that are natural search terms a user might use to find this information.
+Be specific to the content — generic queries are not useful."""
 
 
 def compaction_score(memory: Memory) -> float:
@@ -76,6 +89,9 @@ def _can_merge(group: list[Memory], config: dict) -> bool:
             if (a.fast_pathed and a.compaction_gen == 0) or \
                (b.fast_pathed and b.compaction_gen == 0):
                 return False
+            # A2.3: Generation gap guard — only merge within 1 generation
+            if abs(a.compaction_gen - b.compaction_gen) > config.get("max_generation_gap_for_merge", 1):
+                return False
     return True
 
 
@@ -106,6 +122,67 @@ def _group_by_keywords(candidates: list[Memory], threshold: float) -> list[list[
     return groups
 
 
+def _cosine_similarity(a: list[float], b: list[float]) -> float:
+    """Compute cosine similarity between two vectors."""
+    a_arr = np.array(a)
+    b_arr = np.array(b)
+    dot = np.dot(a_arr, b_arr)
+    norm = np.linalg.norm(a_arr) * np.linalg.norm(b_arr)
+    return float(dot / norm) if norm > 0 else 0.0
+
+
+async def validate_merge(
+    source_memories: list[Memory],
+    candidate_content: str,
+    text_embedder,
+    n_queries: int = 5,
+    degradation_tolerance: float = 0.15,
+) -> MergeValidation:
+    """Validate a merge via generative replay (A2.4).
+
+    Generate synthetic queries from source memories, then test whether the
+    candidate merge still retrieves well for those queries.
+    """
+    source_text = "\n---\n".join(m.content for m in source_memories)
+    prompt = f"Generate {n_queries} search queries for this content:\n\n{source_text}"
+
+    try:
+        queries = await llm_complete_json(prompt, system=_SYNTHETIC_QUERY_SYSTEM)
+        if not isinstance(queries, list):
+            queries = list(queries.values()) if isinstance(queries, dict) else []
+    except Exception:
+        logger.warning("Synthetic query generation failed, failing validation to be safe")
+        return MergeValidation(passed=False, queries_tested=[])
+
+    if not queries:
+        return MergeValidation(passed=True, queries_tested=[])
+
+    # Embed candidate and sources
+    candidate_emb = text_embedder.embed(candidate_content)
+    source_embs = [text_embedder.embed(m.content) for m in source_memories]
+
+    merged_scores = []
+    source_scores = []
+
+    for query in queries:
+        query_emb = text_embedder.embed(str(query))
+        merged_scores.append(_cosine_similarity(query_emb, candidate_emb))
+        best_source = max(_cosine_similarity(query_emb, se) for se in source_embs)
+        source_scores.append(best_source)
+
+    avg_merged = sum(merged_scores) / len(merged_scores) if merged_scores else 0.0
+    avg_source = sum(source_scores) / len(source_scores) if source_scores else 0.0
+    degradation = avg_source - avg_merged
+
+    return MergeValidation(
+        passed=degradation < degradation_tolerance,
+        avg_source_score=avg_source,
+        avg_merged_score=avg_merged,
+        degradation=degradation,
+        queries_tested=[str(q) for q in queries],
+    )
+
+
 class CompactionEngine:
     """Runs compaction cycles — merging low-value memories into generalisations."""
 
@@ -131,7 +208,7 @@ class CompactionEngine:
           1. Select candidates from hot tier
           2. Filter by hard exclusions (graph edge count)
           3. Group by keyword overlap
-          4. Merge eligible groups
+          4. Merge eligible groups (with A2.4 validation)
           5. Update tiers
           6. Log the run
         """
@@ -206,6 +283,25 @@ Respond with JSON only."""
             logger.exception("LLM merge failed for group of %d memories", len(group))
             return None
 
+        merged_content = result.get("content", "")
+
+        # A2.4: Validate merge via generative replay
+        validation = None
+        if self.text_embedder:
+            validation = await validate_merge(
+                source_memories=group,
+                candidate_content=merged_content,
+                text_embedder=self.text_embedder,
+                n_queries=self.config.get("merge_validation_queries", 5),
+                degradation_tolerance=self.config.get("merge_degradation_tolerance", 0.15),
+            )
+            if not validation.passed:
+                logger.info(
+                    "Merge validation failed (degradation=%.3f), skipping group of %d memories",
+                    validation.degradation, len(group),
+                )
+                return None
+
         now = datetime.now(timezone.utc).isoformat()
         new_id = str(uuid.uuid4())
         max_gen = max(m.compaction_gen for m in group)
@@ -219,7 +315,7 @@ Respond with JSON only."""
             id=new_id,
             created_at=now,
             updated_at=now,
-            content=result.get("content", ""),
+            content=merged_content,
             summary=result.get("summary"),
             raw_log_id=group[0].raw_log_id,  # link to first source
             session_id=group[0].session_id,
@@ -271,8 +367,14 @@ Respond with JSON only."""
             )
             await self.sqlite.update_memory_vector_ref(new_id, point_id)
 
-        # Log the merge
-        await self.sqlite.log_compaction_merge(compaction_id, source_ids, new_id)
+        # Log the merge with validation data
+        await self.sqlite.log_compaction_merge(
+            compaction_id, source_ids, new_id,
+            validation_passed=validation.passed if validation else None,
+            avg_source_score=validation.avg_source_score if validation else None,
+            avg_merged_score=validation.avg_merged_score if validation else None,
+            degradation=validation.degradation if validation else None,
+        )
 
         return new_mem
 
