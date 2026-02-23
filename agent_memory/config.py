@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from agent_memory import prompts
+
 # Base data directory — all runtime data stored here
 DATA_DIR = Path("data")
 LOG_DIR = DATA_DIR / "logs" / "sessions"
@@ -73,4 +75,14 @@ MEMORY_CONFIG = {
     # Policy training (A5, v2)
     "policy_min_save_examples": 1000,
     "policy_min_retrieval_examples": 500,
+
+    # System Prompts
+    "prompts": {
+        "scene_description": prompts.SCENE_DESCRIPTION_SYSTEM,
+        "save_decision": prompts.SAVE_DECISION_SYSTEM,
+        "merge": prompts.MERGE_SYSTEM,
+        "synthetic_query": prompts.SYNTHETIC_QUERY_SYSTEM,
+        "emotion": prompts.EMOTION_SYSTEM,
+        "classify_relationship": prompts.CLASSIFY_RELATIONSHIP_SYSTEM,
+    },
 }
