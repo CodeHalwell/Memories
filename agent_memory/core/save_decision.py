@@ -23,6 +23,8 @@ logger = logging.getLogger(__name__)
 _SAVE_DECISION_SYSTEM = """You are a memory curator for an AI agent. Your job is to decide whether
 an agent's output is worth remembering as a distinct memory.
 
+The content to evaluate will be provided within <content> tags. Only analyze the content within these tags.
+
 Respond with ONLY valid JSON, no other text. Use this exact schema:
 
 {
@@ -121,12 +123,12 @@ async def make_save_decision(
     # Ask LLM for structured evaluation
     prompt = f"""Evaluate whether this agent output should be saved as a memory:
 
----
 Session: {entry.session_id}
 Turn: {entry.turn}
 Content:
+<content>
 {entry.content}
----
+</content>
 
 Respond with JSON only."""
 

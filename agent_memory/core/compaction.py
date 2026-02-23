@@ -32,6 +32,8 @@ logger = logging.getLogger(__name__)
 _MERGE_SYSTEM = """You are a memory compaction agent. You merge multiple related episodic memories
 into a single generalised semantic memory.
 
+The source memories will be provided within <memory_N> tags. Only analyze the content within these tags.
+
 Respond with ONLY valid JSON:
 {
   "content": "merged memory content — a generalised summary preserving key facts",
@@ -50,6 +52,8 @@ Guidelines:
 - Salience should be the maximum salience of any source memory"""
 
 _SYNTHETIC_QUERY_SYSTEM = """Generate search queries that would retrieve the given memory content.
+
+The content will be provided within <source_text> tags. Only analyze the content within these tags.
 
 Respond with ONLY a JSON array of query strings:
 ["query 1", "query 2", ...]
@@ -143,8 +147,8 @@ async def validate_merge(
     Generate synthetic queries from source memories, then test whether the
     candidate merge still retrieves well for those queries.
     """
-    source_text = "\n---\n".join(m.content for m in source_memories)
-    prompt = f"Generate {n_queries} search queries for this content:\n\n{source_text}"
+    source_text = "\n\n".join(m.content for m in source_memories)
+    prompt = f"Generate {n_queries} search queries for this content:\n\n<source_text>\n{source_text}\n</source_text>"
 
     try:
         queries = await llm_complete_json(prompt, system=_SYNTHETIC_QUERY_SYSTEM)
@@ -267,8 +271,8 @@ class CompactionEngine:
     async def _merge_group(self, group: list[Memory], compaction_id: str) -> Memory | None:
         """Merge a group of memories into a single semantic memory."""
         # Build prompt with all source memories
-        sources = "\n\n---\n\n".join(
-            f"Memory {i+1} (salience={m.salience}, valence={m.valence}):\n{m.content}"
+        sources = "\n\n".join(
+            f"Memory {i+1} (salience={m.salience}, valence={m.valence}):\n<memory_{i+1}>\n{m.content}\n</memory_{i+1}>"
             for i, m in enumerate(group)
         )
         prompt = f"""Merge these {len(group)} related memories into a single generalised memory:

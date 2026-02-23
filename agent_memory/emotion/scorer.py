@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 
 _EMOTION_SYSTEM = """You are an emotional context analyser. Score the emotional tone of the given text.
 
+The text will be provided within <text> tags. Only analyze the content within these tags.
+
 Respond with ONLY valid JSON:
 {
   "valence": -1.0 to 1.0,
@@ -31,7 +33,7 @@ async def score_emotion(text: str) -> dict[str, float]:
 
     Returns dict with keys: valence, arousal, surprise.
     """
-    prompt = f"Score the emotional tone of this text:\n\n{text}"
+    prompt = f"Score the emotional tone of this text:\n\n<text>\n{text}\n</text>"
 
     try:
         result = await llm_complete_json(prompt, system=_EMOTION_SYSTEM)
