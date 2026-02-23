@@ -28,13 +28,6 @@ from agent_memory.storage.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
-_CLASSIFY_SYSTEM = """Classify the relationship between two memories.
-
-Respond with exactly one word from this list:
-caused, supports, contradicts, precedes, part_of, analogous, unrelated
-
-If the connection is weak or speculative, respond "unrelated"."""
-
 
 async def classify_relationship(
     mem_a_content: str, mem_b_content: str,
@@ -45,7 +38,7 @@ async def classify_relationship(
         "What is the relationship?"
     )
     try:
-        response = await llm_complete(prompt, system=_CLASSIFY_SYSTEM, temperature=0.1)
+        response = await llm_complete(prompt, system=MEMORY_CONFIG["prompts"]["classify_relationship"], temperature=0.1)
         result = response.strip().lower()
         valid = {"caused", "supports", "contradicts", "precedes", "part_of", "analogous", "unrelated"}
         return result if result in valid else "unrelated"

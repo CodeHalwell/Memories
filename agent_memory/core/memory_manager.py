@@ -41,15 +41,6 @@ from agent_memory.storage.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
-_SCENE_SYSTEM = """You generate abstract, impressionistic scene descriptions for memories.
-Not photorealistic — spatial and relational structure is the goal.
-
-Respond with ONLY the scene description text. Example:
-"A sparse room with two opposing ideas at opposite walls, connected by a fragile thread.
-The atmosphere is tense, slightly dark. The more important concept occupies the centre and is larger."
-
-Keep it to 2-3 sentences maximum."""
-
 
 class MemoryManager:
     """Top-level orchestrator for the agent memory system."""
@@ -320,7 +311,7 @@ class MemoryManager:
             from agent_memory.llm.client import llm_complete
             scene = await llm_complete(
                 f"Generate an abstract scene description for this memory:\n\n<memory_content>\n{memory.content}\n</memory_content>",
-                system=_SCENE_SYSTEM,
+                system=self.config["prompts"]["scene_description"],
             )
             memory.scene_description = scene.strip()
 
