@@ -115,8 +115,8 @@ async def validate_merge(
     Generate synthetic queries from source memories, then test whether the
     candidate merge still retrieves well for those queries.
     """
-    source_text = "\n---\n".join(m.content for m in source_memories)
-    prompt = f"Generate {n_queries} search queries for this content:\n\n{source_text}"
+    source_text = "\n\n".join(m.content for m in source_memories)
+    prompt = f"Generate {n_queries} search queries for this content:\n\n<source_text>\n{source_text}\n</source_text>"
 
     try:
         queries = await llm_complete_json(prompt, system=MEMORY_CONFIG["prompts"]["synthetic_query"])
@@ -239,8 +239,8 @@ class CompactionEngine:
     async def _merge_group(self, group: list[Memory], compaction_id: str) -> Memory | None:
         """Merge a group of memories into a single semantic memory."""
         # Build prompt with all source memories
-        sources = "\n\n---\n\n".join(
-            f"Memory {i+1} (salience={m.salience}, valence={m.valence}):\n{m.content}"
+        sources = "\n\n".join(
+            f"Memory {i+1} (salience={m.salience}, valence={m.valence}):\n<memory_{i+1}>\n{m.content}\n</memory_{i+1}>"
             for i, m in enumerate(group)
         )
         prompt = f"""Merge these {len(group)} related memories into a single generalised memory:

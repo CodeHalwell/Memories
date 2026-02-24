@@ -94,12 +94,12 @@ async def make_save_decision(
     # Ask LLM for structured evaluation
     prompt = f"""Evaluate whether this agent output should be saved as a memory:
 
----
 Session: {entry.session_id}
 Turn: {entry.turn}
 Content:
+<content>
 {entry.content}
----
+</content>
 
 Respond with JSON only."""
 

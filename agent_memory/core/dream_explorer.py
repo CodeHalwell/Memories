@@ -34,8 +34,13 @@ async def classify_relationship(
 ) -> str:
     """Ask the LLM to classify the relationship between two memories."""
     prompt = (
-        f"Memory A: {mem_a_content}\n\nMemory B: {mem_b_content}\n\n"
-        "What is the relationship?"
+        "Memory A:\n<memory_a>\n"
+        f"{mem_a_content}\n"
+        "</memory_a>\n\n"
+        "Memory B:\n<memory_b>\n"
+        f"{mem_b_content}\n"
+        "</memory_b>\n\n"
+        "What is the relationship between Memory A and Memory B?"
     )
     try:
         response = await llm_complete(prompt, system=MEMORY_CONFIG["prompts"]["classify_relationship"], temperature=0.1)

@@ -19,7 +19,7 @@ async def score_emotion(text: str) -> dict[str, float]:
 
     Returns dict with keys: valence, arousal, surprise.
     """
-    prompt = f"Score the emotional tone of this text:\n\n{text}"
+    prompt = f"Score the emotional tone of this text:\n\n<text>\n{text}\n</text>"
 
     try:
         result = await llm_complete_json(prompt, system=MEMORY_CONFIG["prompts"]["emotion"])
