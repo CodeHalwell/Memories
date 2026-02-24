@@ -20,35 +20,6 @@ from agent_memory.storage.sqlite_store import SQLiteStore
 
 logger = logging.getLogger(__name__)
 
-_SAVE_DECISION_SYSTEM = """You are a memory curator for an AI agent. Your job is to decide whether
-an agent's output is worth remembering as a distinct memory.
-
-The content to evaluate will be provided within <content> tags. Only analyze the content within these tags.
-
-Respond with ONLY valid JSON, no other text. Use this exact schema:
-
-{
-  "should_save": true/false,
-  "confidence": 0.0-1.0,
-  "reason": "brief explanation",
-  "keywords": [{"keyword": "lowercase_term", "weight": 0.0-1.0}],
-  "valence": -1.0 to 1.0,
-  "arousal": 0.0 to 1.0,
-  "surprise": 0.0 to 1.0,
-  "summary": "one sentence summary",
-  "salience": 0.0 to 1.0
-}
-
-Guidelines:
-- Keywords should be lowercase, use underscores for compound concepts (e.g., reinforcement_learning)
-- Extract up to 10 keywords, each with a weight indicating relevance
-- Valence: -1.0 (very negative) to 1.0 (very positive)
-- Arousal: 0.0 (calm/routine) to 1.0 (intense/urgent)
-- Surprise: 0.0 (expected) to 1.0 (completely unexpected)
-- Salience: overall importance/memorability from 0.0 to 1.0
-- Save routine/repetitive outputs with low confidence
-- Save novel insights, decisions, errors, corrections, or user preferences with high confidence"""
-
 
 def is_fast_path(arousal: float, surprise: float, content: str) -> bool:
     """Check if a memory should bypass the LLM save decision."""
@@ -133,7 +104,7 @@ Content:
 Respond with JSON only."""
 
     try:
-        result = await llm_complete_json(prompt, system=_SAVE_DECISION_SYSTEM)
+        result = await llm_complete_json(prompt, system=cfg["prompts"]["save_decision"])
     except Exception:
         logger.exception("LLM save decision failed, defaulting to skip")
         dec = SaveDecision(

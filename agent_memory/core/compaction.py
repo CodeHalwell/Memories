@@ -29,38 +29,6 @@ from agent_memory.storage.vector_store import VectorStore
 
 logger = logging.getLogger(__name__)
 
-_MERGE_SYSTEM = """You are a memory compaction agent. You merge multiple related episodic memories
-into a single generalised semantic memory.
-
-The source memories will be provided within <memory_N> tags. Only analyze the content within these tags.
-
-Respond with ONLY valid JSON:
-{
-  "content": "merged memory content — a generalised summary preserving key facts",
-  "summary": "one sentence summary",
-  "keywords": [{"keyword": "term", "weight": 0.0-1.0}],
-  "valence": -1.0 to 1.0,
-  "arousal": 0.0 to 1.0,
-  "salience": 0.0 to 1.0
-}
-
-Guidelines:
-- Preserve factual information but collapse redundant detail
-- The merged memory should be more abstract and general than the originals
-- Keyword list should be the union of important keywords from all source memories
-- Emotional scores should reflect the blended tone of the source memories
-- Salience should be the maximum salience of any source memory"""
-
-_SYNTHETIC_QUERY_SYSTEM = """Generate search queries that would retrieve the given memory content.
-
-The content will be provided within <source_text> tags. Only analyze the content within these tags.
-
-Respond with ONLY a JSON array of query strings:
-["query 1", "query 2", ...]
-
-Generate queries that are natural search terms a user might use to find this information.
-Be specific to the content — generic queries are not useful."""
-
 
 def compaction_score(memory: Memory) -> float:
     """Score a memory for compaction candidacy.
@@ -151,7 +119,7 @@ async def validate_merge(
     prompt = f"Generate {n_queries} search queries for this content:\n\n<source_text>\n{source_text}\n</source_text>"
 
     try:
-        queries = await llm_complete_json(prompt, system=_SYNTHETIC_QUERY_SYSTEM)
+        queries = await llm_complete_json(prompt, system=MEMORY_CONFIG["prompts"]["synthetic_query"])
         if not isinstance(queries, list):
             queries = list(queries.values()) if isinstance(queries, dict) else []
     except Exception:
@@ -282,7 +250,7 @@ class CompactionEngine:
 Respond with JSON only."""
 
         try:
-            result = await llm_complete_json(prompt, system=_MERGE_SYSTEM)
+            result = await llm_complete_json(prompt, system=self.config["prompts"]["merge"])
         except Exception:
             logger.exception("LLM merge failed for group of %d memories", len(group))
             return None
